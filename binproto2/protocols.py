@@ -8,6 +8,7 @@ import time
 from collections import deque
 
 import serial
+import socket
 
 from binproto2.exceptions import (ConnectionLost, FatalError, PayloadOverflow,
                                   ReadTimeout, SynchronizationError)
@@ -85,15 +86,82 @@ class _NoneLogger(object):
         pass
 
 
+class SerialDevice:
+    def __init__(self, device, baudrate):
+        self.device = device
+        self.baudrate = baudrate
+        self.reconnect()
+
+    def reconnect(self):
+        self.serial = serial.Serial(self.device, self.baudrate, write_timeout = 0, timeout = 1)
+
+    def write(self, msg):
+        return self.serial.write(msg)
+
+    def close(self):
+        return self.serial.close()
+
+    def in_waiting(self):
+        return self.serial.in_waiting
+
+    def reset_input_buffer(self):
+        return self.serial.reset_input_buffer
+
+    def readline(self):
+        return self.serial.readline()
+
+
+class SerialNetwork:
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+        self.buf = b""
+        self.reconnect()
+
+    def reconnect(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect((self.ip, self.port))
+
+    def write(self, msg):
+        #sent = self.socket.send(bytes(msg, 'utf-8'))
+        sent = self.socket.send(msg)
+        if sent == 0:
+            raise RuntimeError(error_msg)
+
+    def close(self):
+        return self.socket.close()
+
+    def in_waiting(self):
+        return 0
+
+    def reset_input_buffer(self):
+        pass
+
+    def readline(self):
+        #s = b""
+        #while True:
+        #    s += self.socket.recv(1)
+        #    if chr(s[-1]) == '\n':
+        #        break
+        #return s
+
+        while True:
+            split = self.buf.split(b'\n')
+            if len(split) > 1:
+                self.buf = b'\n'.join(split[1:])
+                return split[0] + b'\n'
+            self.buf += self.socket.recv(32)
+        
+        #return self.socket.recv(4096, socket.MSG_PEEK)
+
+
 class Protocol(object):
     simerr = float(0)
 
-    def __init__(self, device, baud, bsize, timeout, logger = None):
+    def __init__(self, port, bsize, timeout, logger = None):
         self.logger = logger or _NoneLogger()
         self.logger.info("pySerial Version: %s" % serial.VERSION)
-        self.port = serial.Serial(device, baudrate = baud, write_timeout = 0, timeout = 1)
-        self.device = device
-        self.baud = baud
+        self.port = port
         self.block_size = int(bsize)
         self.simulate_errors = max(min(Protocol.simerr, 1.0), 0.0)
         self.connected = True
@@ -167,7 +235,7 @@ class Protocol(object):
         self.synchronized = False
 
     def _receive_worker(self):
-        while self.port.in_waiting:
+        while self.port.in_waiting():
             self.port.reset_input_buffer()
 
         def dispatch(data):
@@ -183,7 +251,7 @@ class Protocol(object):
             for _ in range(10):
                 try:
                     if self.connected:
-                        self.port = serial.Serial(self.device, baudrate = self.baud, write_timeout = 0, timeout = 1)
+                        self.port.reconnect()
                         return
                     else:
                         self.logger.info("Connection closed")
@@ -224,6 +292,15 @@ class Protocol(object):
             except ReadTimeout:
                 self.errors += 1
                 self.logger.debug("Packet loss detected")
+            except BrokenPipeError as exc:
+                self.errors += 1
+                self.logger.info(exc)
+                self.port.reconnect()
+            except Exception as exc:
+                self.errors += 1
+                self.logger.info("Unknown Error")
+                self.port.reconnect()
+
         self.packet_transit = None
 
     def _await_response(self):
@@ -353,12 +430,12 @@ class FileTransferProtocol(object):
         payload += b'\1' if compression else b'\0'    # payload compression
         payload += bytearray(filename, 'utf8') + b'\0'# target filename + null terminator
 
-        timeout = _TimeOut(5000)
+        timeout = _TimeOut(15000)
         token = None
         self.protocol._send(FileTransferProtocol.protocol_id, FileTransferProtocol.Packet.OPEN, payload)
         while token != 'PFT:success' and not timeout.timedout():
             try:
-                token, _ = self._await_response(1000)
+                token, _ = self._await_response(10000)
                 if token == 'PFT:success':
                     self.logger.info("Opened file: {0}".format(filename))
                     return

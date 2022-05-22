@@ -31,11 +31,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        protocol = mbp.Protocol(args.port, args.baud, args.blocksize, int(args.timeout), ConsoleLogger())
+        if args.port.startswith("socket://"):
+            s = args.port.split(':')
+            ip = s[1][2:]
+            network_port = int(s[2])
+            port = mbp.SerialNetwork(ip, network_port)
+        else:
+            port = mbp.SerialDevice(args.port, args.baud)
+        protocol = mbp.Protocol(port, args.blocksize, int(args.timeout), ConsoleLogger())
         echologger = mbp.EchoProtocol(protocol, ConsoleLogger())
 
         protocol.connect()
-
         filetransfer = mbp.FileTransferProtocol(protocol, None, ConsoleLogger())
         filetransfer.copy(args.source, args.destination or os.path.basename(args.source), args.compression, args.test)
 
@@ -50,6 +56,7 @@ if __name__ == "__main__":
         print("Too Many Retries, Abort")
 
     except Exception as exc:
+        print("####")
         print(exc)
 
     finally:
