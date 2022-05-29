@@ -224,6 +224,11 @@ class Protocol(object):
             except ReadTimeout:
                 self.errors += 1
                 self.logger.debug("Packet loss detected")
+            except Exception as exc:
+                self.errors += 1
+                self.port = serial.Serial(self.device, baudrate = self.baud, write_timeout = 0, timeout = 1)
+                self.logger.info("Unknown Error: {}".format(exc))
+
         self.packet_transit = None
 
     def _await_response(self):
